@@ -1,8 +1,18 @@
 /**
    Combined MidiBLe_Client and Adafruit_SSD1306 demo
-   Reports key presses from Bluetooth Midi keyboard
-   and using FASTLED
+   to report key and pedal presses from Bluetooth Midi keyboard
+   and using FASTLED to display on LED strip
+
+   Arduino 1.8.13
+   BLE-MIDI lathoub 2.2.0
+   FastLED 3.9.6
+   Adafruit_GFX 1.11.1
+   Adafruit_SSD1306 2.5.13
+
+   On NODEMCU 32S (Chinese equiv)
+   Also For TTGO Wifi + Bluetooth Battery OLED
 */
+#define HAS_OLED
 
 #include <Arduino.h>
 
@@ -25,11 +35,12 @@ BLEMIDI_CREATE_DEFAULT_INSTANCE(); //Connect to first server found
 //#define CLK_PIN   4
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
-#define NUM_LEDS    16
+#define NUM_LEDS    60
 #define BRIGHTNESS          96
-#define FRAMES_PER_SECOND  120
+#define FRAMES_PER_SECOND  60
 CRGB leds[NUM_LEDS];
 
+#ifdef HAS_OLED
 ///////////////////////////  OLED  //////////////////////////////
 //#include <Wire.h>               // Only needed for Arduino 1.6.5 and earlier
 #include <Adafruit_GFX.h>
@@ -47,7 +58,7 @@ CRGB leds[NUM_LEDS];
 #define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
+#endif
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 2 //modify for match with yout board
@@ -57,14 +68,20 @@ void ReadCB(void *parameter);       //Continuos Read function (See FreeRTOS mult
 
 /// Global variables
 unsigned long t0 = millis();
-uint16_t firstline;
 bool isConnected = false;
-char buf[400];
+// must be longer than longest message
+char gBuffer[400];
+
+#ifdef HAS_OLED
 uint8_t line_to_write = 56;
 uint8_t shift_of_display = 0;
+#endif
+
 bool DampON = false;
+uint8_t gCurrentPatternNumber = 0; // Index number of which pattern is current
+uint8_t gHue = 0; // rotating "base color" used by many of the patterns
 
-
+#ifdef HAS_OLED
 void scrollline() {
   line_to_write += 8;
   line_to_write %= 64;
@@ -73,6 +90,7 @@ void scrollline() {
   display.writeFillRect(0, line_to_write, 128, 8, 0); //clear line first
   display.setCursor(0, line_to_write);
 }
+#endif
 /**
    -----------------------------------------------------------------------------
    When BLE is connected, LED will turn on (indicating that connection was successful)
@@ -93,6 +111,7 @@ void setup()
 
   Serial.begin(115200);
 
+#ifdef HAS_OLED
   /// OLED setup
   //https://github.com/espressif/arduino-esp32/issues/3779
 #ifdef ARDUINO_ARCH_ESP32
@@ -115,6 +134,7 @@ void setup()
   display.ssd1306_command(0x40 + shift_of_display);
   display.println(F("MIDI keys!"));
   display.display();
+#endif
 
   /// BLEMIDI setup
   MIDI.begin(MIDI_CHANNEL_OMNI);
@@ -141,77 +161,72 @@ void setup()
 
   MIDI.setHandleControlChange([](byte channel, byte number, byte value)
   {
-    digitalWrite(LED_BUILTIN, LOW);
-    Serial.printf("--- CC %d CH %d, number:%d, value:%d", millis() - t0, channel, number, value);
-    Serial.printf("  cursor at %d, %d\n", display.getCursorX(), display.getCursorY());
+    //digitalWrite(LED_BUILTIN, LOW);
+    //Serial.printf("--- CC %d CH %d, number:%d, value:%d", millis() - t0, channel, number, value);
+    //Serial.printf("  cursor at %d, %d\n", display.getCursorX(), display.getCursorY());
     //display.print("ON %d CH %d, number:%d, value:%d\n", millis() - t0,  channel, number, value);
     if (number == 66 || number == 67) {
       if (number == 66) {
-        scrollline();
-        display.print("HOLD ");
+        sprintf(gBuffer, "HOLD %s %d", (value <= 64) ? "OFF " : "ON ", millis() - t0);
       } else {
-        scrollline();
-        display.print("SOFT ");
+        sprintf(gBuffer, "SOFT %s %d", (value <= 64) ? "OFF " : "ON ", millis() - t0);
       }
-      display.print((value <= 64) ? "OFF " : "ON ");
-      display.println(millis() - t0);
+      Serial.println(gBuffer);
+      scrollline();
+      display.println(gBuffer);
       display.display();
     } else if (number == 64) {
       if (value == 0) {
         DampON = false;
         scrollline();
-        display.print("DAMP OFF ");
+        Serial.println("SUST OFF");
+        display.print("SUST OFF ");
         display.println(millis() - t0);
         display.display();
       } else if (!DampON) {
         DampON = true;
         scrollline();
-        display.print("DAMP ON ");
+        Serial.println("SUST ON");
+        display.print("SUST ON ");
         display.println(millis() - t0);
         display.display();
       }
     } else {
+      sprintf(gBuffer, "C-%d (%d) %d", number, value, millis() - t0);
+      Serial.println(gBuffer);
       scrollline();
-      display.print("C-");
-      display.print(millis() - t0);
-      display.print("-");
-      display.print(number);
-      display.print("(");
-      display.print(value);
-      display.println(")");
+      display.println(gBuffer);
       display.display();
     }
   });
 
   MIDI.setHandleNoteOn([](byte channel, byte note, byte velocity)
   {
-    digitalWrite(LED_BUILTIN, LOW);
-    Serial.printf("ON %d CH %d, note:%d, vel:%d", millis() - t0, channel, note, velocity);
-    Serial.printf("  cursor at %d, %d\n", display.getCursorX(), display.getCursorY());
-    //display.print("ON %d CH %d, note:%d, vel:%d\n", millis() - t0,  channel, note, velocity);
+    //digitalWrite(LED_BUILTIN, LOW);
+    //leds[note % 12].setHSV((note / 12 - 5) * 32, 255, velocity * 2);
+    leds[(note + 30) % 60].setHSV(gHue, 255, 32 + (velocity / 4) * 7);
+    //Serial.printf("ON %d CH %d, note:%d, vel:%d", millis() - t0, channel, note, velocity);
+    //Serial.printf("  cursor at %d, %d\n", display.getCursorX(), display.getCursorY());
+    //sprintf(gBuffer, "ON %d CH %d, note:%d, vel:%d", millis() - t0, channel, note, velocity);
+    sprintf(gBuffer, "D-%d (%d) %d", note, velocity, millis() - t0);
+    Serial.println(gBuffer);
     scrollline();
-    display.print("D-");
-    display.print(millis() - t0);
-    display.print("-");
-    display.print(note);
-    display.print("(");
-    display.print(velocity);
-    display.println(")");
+    display.println(gBuffer);
     display.display();
   });
+
   MIDI.setHandleNoteOff([](byte channel, byte note, byte velocity)
   {
-    digitalWrite(LED_BUILTIN, HIGH);
-    Serial.printf("OFF %d CH %d, note:%d, vel:%d", millis() - t0,  channel, note, velocity);
-    Serial.printf("  cursor at %d, %d\n", display.getCursorX(), display.getCursorY());
+    //digitalWrite(LED_BUILTIN, HIGH);
+    //leds[note % 12] = CRGB::Black;
+    //TODO need to handle SUST ON notes and HOLD ON
+    leds[(note + 30) % 60] = CRGB::Black;
+    //Serial.printf("OFF %d CH %d, note:%d, vel:%d", millis() - t0,  channel, note, velocity);
+    //Serial.printf("  cursor at %d, %d\n", display.getCursorX(), display.getCursorY());
+    sprintf(gBuffer, "U-%d (%d) %d", note, velocity, millis() - t0);
+    Serial.println(gBuffer);
     scrollline();
-    display.print("U-");
-    display.print(millis() - t0);
-    display.print("-");
-    display.print(note);
-    display.print("(");
-    display.print(velocity);
-    display.println(")");
+    display.println(gBuffer);
     display.display();
   });
 
@@ -239,10 +254,9 @@ void setup()
 
 // List of patterns to cycle through.  Each is defined as a separate function below.
 typedef void (*SimplePatternList[])();
-SimplePatternList gPatterns = { rainbow, rainbowWithGlitter, confetti, sinelon, juggle, bpm };
+SimplePatternList gPatterns = { donothing, rainbow, rainbowWithGlitter, confetti, sinelon, juggle, bpm };
 
-uint8_t gCurrentPatternNumber = 0; // Index number of which pattern is current
-uint8_t gHue = 0; // rotating "base color" used by many of the patterns
+
 
 // -----------------------------------------------------------------------------
 void loop() // runs on core1
@@ -304,7 +318,14 @@ void ReadCB(void *parameter)
 void nextPattern()
 {
   // add one to the current pattern number, and wrap around at the end
+  return;
   gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE( gPatterns);
+}
+
+void donothing()
+{
+  fadeToBlackBy( leds, NUM_LEDS, 1);
+  return;
 }
 
 void rainbow()
